@@ -14,7 +14,7 @@ import datetime
 
 app = Flask(__name__)
 
-# --- CONFIG BASE ---
+# --- CONFIG BASE --- tottigol
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["JWT_SECRET_KEY"] = "cambia-questa-chiave-super-segreta"
