@@ -9,6 +9,7 @@ from flask_jwt_extended import (
     get_jwt_identity,
 )
 from datetime import datetime, date, timedelta
+import requests
 
 # -------------------------------------------------
 # CONFIG APP
@@ -23,15 +24,53 @@ db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 
-# React gira su 3000 → abilitiamo CORS
+# React gira su 3000 / 3001 → abilitiamo CORS
 CORS(
     app,
     supports_credentials=True,
     origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
     ],
 )
+
+# -------------------------------------------------
+# CONFIG TCGdex (NUOVO PROVIDER UNICO)
+# -------------------------------------------------
+# Docs base: https://api.tcgdex.net/v2/en/cards
+TCGDEX_BASE_URL = "https://api.tcgdex.net/v2/en"
+
+
+def tcgdex_request(path: str, params: dict | None = None):
+    """
+    Helper per chiamare la TCGdex REST API.
+    Esempio:
+      GET https://api.tcgdex.net/v2/en/cards?name=pikachu
+    """
+    url = f"{TCGDEX_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+    except requests.RequestException as e:
+        return None, {
+            "msg": "Errore di connessione verso TCGdex API.",
+            "detail": str(e),
+        }
+
+    if resp.status_code != 200:
+        return None, {
+            "msg": "Errore dalla TCGdex API.",
+            "status": resp.status_code,
+            "body": resp.text,
+        }
+
+    try:
+        data = resp.json()
+    except Exception:
+        return None, {"msg": "Risposta TCGdex API non valida."}
+
+    return data, None
 
 
 # -------------------------------------------------
@@ -74,7 +113,7 @@ class Collectible(db.Model):
     location = db.Column(db.String(255))
     notes = db.Column(db.Text)
 
-    external_id = db.Column(db.String(255))   # id su Cardmarket o altri marketplace
+    external_id = db.Column(db.String(255))   # id su TCGdex/Cardmarket
     image_url = db.Column(db.String(500))
 
     extra_data = db.Column(db.JSON, nullable=True)
@@ -252,5 +291,94 @@ def delete_collectible(item_id):
     return jsonify({"msg": "Deleted"}), 200
 
 
+# -------------------------------------------------
+# RICERCA CARTE POKÉMON (TCGdex)
+# -------------------------------------------------
+@app.route("/api/pokemon/search", methods=["GET"])
+@jwt_required()
+def search_pokemon_cards():
+    """
+    Cerca carte Pokémon tramite TCGdex.
+    Parametri (query string):
+      - name (obbligatorio; alias q)
+      - setName (opzionale)
+      - rarity (opzionale)
+      - page (opzionale, default 1)
+      - pageSize (opzionale, default 20, max 100)
+    """
+    name = (request.args.get("name") or request.args.get("q") or "").strip()
+    if not name:
+        return jsonify({"msg": "Parametro 'name' obbligatorio"}), 400
+
+    set_name = (request.args.get("setName") or "").strip()
+    rarity = (request.args.get("rarity") or "").strip()
+
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+
+    try:
+        page_size = int(request.args.get("pageSize", 20))
+    except ValueError:
+        page_size = 20
+
+    page_size = max(1, min(page_size, 100))
+
+    params = {
+        "name": name,
+        "pagination:page": page,
+        "pagination:itemsPerPage": page_size,
+    }
+
+    if set_name and set_name.lower() != "all":
+        params["set.name"] = set_name
+
+    if rarity:
+        params["rarity"] = rarity
+
+    data, err = tcgdex_request("cards", params=params)
+    if err:
+        return jsonify(err), 502
+
+    cards_raw = data or []
+
+    cards = []
+    for card in cards_raw:
+        pricing = (card.get("pricing") or {}).get("cardmarket") or {}
+        estimated_market_price = (
+            pricing.get("trend")
+            or pricing.get("avg")
+            or pricing.get("avg30")
+        )
+
+        set_obj = card.get("set") or {}
+
+        # sistemiamo l'URL immagine: TCGdex espone base, noi aggiungiamo /low.webp
+        image_raw = card.get("image")
+        image_url = None
+        if image_raw:
+            image_url = f"{image_raw}/low.webp"
+
+        cards.append({
+            "externalId": card.get("id"),
+            "name": card.get("name"),
+            "setName": set_obj.get("name"),
+            "number": card.get("localId") or card.get("number"),
+            "rarity": card.get("rarity"),
+            "imageUrl": image_url,
+            "estimatedMarketPrice": float(estimated_market_price) if estimated_market_price is not None else None,
+        })
+
+    return jsonify({
+        "total": len(cards),
+        "count": len(cards),
+        "cards": cards,
+    }), 200
+
+
+# -------------------------------------------------
+# AVVIO APP
+# -------------------------------------------------
 if __name__ == "__main__":
     app.run(debug=True)
