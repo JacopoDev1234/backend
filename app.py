@@ -44,11 +44,6 @@ TCGDEX_BASE_URL = "https://api.tcgdex.net/v2/en"
 
 
 def tcgdex_request(path: str, params: dict | None = None):
-    """
-    Helper per chiamare la TCGdex REST API.
-    Esempio:
-      GET https://api.tcgdex.net/v2/en/cards?name=pikachu
-    """
     url = f"{TCGDEX_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
     try:
         resp = requests.get(url, params=params, timeout=10)
@@ -375,6 +370,36 @@ def search_pokemon_cards():
         "count": len(cards),
         "cards": cards,
     }), 200
+
+# Api per ottenere i set di carte pokemon
+
+@app.route("/api/pokemon/sets", methods=["GET"])
+@jwt_required()
+def pokemon_sets():
+    """
+    Restituisce la lista dei set da TCGdex (id + name) per la tendina.
+    """
+    params = {
+        "sort:field": "name",
+        "sort:order": "ASC",
+        "pagination:page": 1,
+        "pagination:itemsPerPage": 500,  # abbastanza alto da coprire tutti gli attuali set
+    }
+
+    data, err = tcgdex_request("sets", params=params)
+    if err:
+        return jsonify(err), 502
+
+    # /v2/en/sets restituisce un array di set
+    sets_raw = data or []
+    sets = []
+    for s in sets_raw:
+        sets.append({
+            "id": s.get("id"),
+            "name": s.get("name"),
+        })
+
+    return jsonify(sets), 200
 
 
 # -------------------------------------------------
